@@ -39,9 +39,10 @@ jobs:
       EXPO_PUBLIC_CINDY_AUTH_REGION: ${{ inputs.region || 'cn' }}
       NODE_OPTIONS: "--max-old-space-size=8192"
     steps:
-      - name: Free disk space
+      - name: Free disk space (KEEP Android SDK)
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          sudo rm -rf /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/lib/android/ndk-* || true
+          echo "ANDROID_HOME=$ANDROID_HOME"; echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
           df -h /
       - name: Checkout
         uses: actions/checkout@v4
@@ -53,14 +54,21 @@ jobs:
           node-version: "22"
           cache: pnpm
       - name: Setup JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
       - name: Android SDK packages
         run: |
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "platforms;android-35" "platforms;android-36" "build-tools;35.0.0" "build-tools;36.0.0" >/dev/null
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "Using SDK root: $SDK"; ls -d "$SDK" || true
+          SDKMGR=$(find "$SDK/cmdline-tools" -name sdkmanager -type f 2>/dev/null | head -1)
+          [ -z "$SDKMGR" ] && SDKMGR=$(command -v sdkmanager || true)
+          if [ -z "$SDKMGR" ]; then echo "sdkmanager not found; rely on AGP auto-download"; exit 0; fi
+          echo "sdkmanager: $SDKMGR"
+          yes | "$SDKMGR" --licenses >/dev/null 2>&1 || true
+          "$SDKMGR" --install "platform-tools" "platforms;android-36" "build-tools;36.0.0" || true
+          "$SDKMGR" --list_installed 2>/dev/null | head -30 || true
       - name: Generate self-host-regions.json
         run: node ./.ci-write-regions.cjs || node -e "require('fs').writeFileSync('apps/mobile/scripts/self-host-regions.json',JSON.stringify({cn:{authRegion:'cn',iosBundleId:'com.xd.cindycn',iosAppStoreId:'',androidPackage:'com.xd.cindycn',androidStoreUrl:'',npkgExpectBundle:'',tapdb:{clientId:'ci',clientToken:'ci'},oss:{cdnBaseUrl:'',bucket:'',prefix:'',ossRegion:''},iosSigning:{teamId:'',profileName:'',signIdentity:'',profilePath:'',exportMethod:''},androidSigning:{keyAlias:'cindy',keystorePath:'/tmp/cindy.keystore'}},global:{authRegion:'global',iosBundleId:'com.xd.cindy',iosAppStoreId:'',androidPackage:'com.xd.cindy',androidStoreUrl:'',npkgExpectBundle:'',google:{webClientId:'',iosClientId:'',iosUrlScheme:''},tapdb:{clientId:'ci',clientToken:'ci'},oss:{cdnBaseUrl:'',bucket:'',prefix:'',ossRegion:''},iosSigning:{teamId:'',profileName:'',signIdentity:'',profilePath:'',exportMethod:''},androidSigning:{keyAlias:'cindy',keystorePath:'/tmp/cindy.keystore'}},dev:{authRegion:'dev',iosBundleId:'com.xd.cindycn',iosAppStoreId:'',androidPackage:'com.xd.cindycn',androidStoreUrl:'',npkgExpectBundle:'',tapdb:{clientId:'ci',clientToken:'ci'},oss:{cdnBaseUrl:'',bucket:'',prefix:'',ossRegion:''},iosSigning:{teamId:'',profileName:'',signIdentity:'',profilePath:'',exportMethod:''},androidSigning:{keyAlias:'cindy',keystorePath:'/tmp/cindy.keystore'}}},null,2));console.log('regions written')"
       - name: Install dependencies
