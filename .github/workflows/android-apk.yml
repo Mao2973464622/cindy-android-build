@@ -9,10 +9,10 @@ on:
         options: [cn, global]
         default: cn
       variant:
-        description: "构建类型（debug 免签名依赖，先保证出包）"
+        description: "构建类型（release=内置JS可独立运行；debug=需连Metro开发服务器，装了也打不开）"
         type: choice
-        options: [debug, release]
-        default: debug
+        options: [release, debug]
+        default: release
   push:
     paths:
       - ".github/workflows/android-apk.yml"
@@ -37,6 +37,8 @@ jobs:
       EXPO_NO_TELEMETRY: "1"
       CI: "false"
       EXPO_PUBLIC_CINDY_AUTH_REGION: ${{ inputs.region || 'cn' }}
+      EXPO_PUBLIC_ENDPOINT_MANIFEST_BASE_URL: ${{ inputs.region == 'global' && 'https://hotfix.cindy.app/cindy' || 'https://hotfix.cindy.com.cn/cindy' }}
+      EXPO_PUBLIC_ENDPOINT_MANIFEST_PEER_BASE_URL: ${{ inputs.region == 'global' && 'https://hotfix.cindy.com.cn/cindy' || 'https://hotfix.cindy.app/cindy' }}
       NODE_OPTIONS: "--max-old-space-size=8192"
     steps:
       - name: Free disk space (KEEP Android SDK)
@@ -87,6 +89,19 @@ jobs:
           mkdir -p out
           find apps/mobile/android -name "*.apk" -print -exec cp -v {} out/ \;
           echo '--- artifacts ---'; ls -la out/ || true
+          APK=$(ls out/*.apk | head -1)
+          if [ -z "$APK" ]; then echo "NO APK PRODUCED"; exit 1; fi
+          python3 - "$APK" <<'PY'
+          import sys,zipfile
+          z=zipfile.ZipFile(sys.argv[1]); n=z.namelist()
+          bundle=[x for x in n if 'index.android.bundle' in x]
+          print('bundle:',bundle)
+          if not bundle:
+              print('::error::APK 里没有内置 JS bundle，这种包离线打不开，拒绝发布')
+              sys.exit(1)
+          abis=sorted(set(x.split('/')[1] for x in n if x.startswith('lib/')))
+          print('ABIs:',abis)
+          PY
       - name: Upload artifact
         if: always()
         uses: actions/upload-artifact@v4
