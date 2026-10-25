@@ -81,7 +81,7 @@ jobs:
       - name: Gradle build
         working-directory: apps/mobile/android
         run: |
-          if [ "${{ inputs.variant || 'debug' }}" = "release" ]; then TASK=assembleRelease; else TASK=assembleDebug; fi
+          if [ "${{ inputs.variant || 'release' }}" = "release" ]; then TASK=assembleRelease; else TASK=assembleDebug; fi
           echo "Task: $TASK"
           ./gradlew "$TASK" --no-daemon --stacktrace
       - name: Collect APK
@@ -106,7 +106,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: cindy-android-${{ inputs.region || 'cn' }}-${{ inputs.variant || 'debug' }}
+          name: cindy-android-${{ inputs.region || 'cn' }}-${{ inputs.variant || 'release' }}
           path: out/*.apk
           if-no-files-found: warn
           retention-days: 30
@@ -136,5 +136,5 @@ jobs:
       - name: Summary
         if: always()
         run: |
-          echo "## Cindy Android 构建 · ${{ inputs.region || 'cn' }} / ${{ inputs.variant || 'debug' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "## Cindy Android 构建 · ${{ inputs.region || 'cn' }} / ${{ inputs.variant || 'release' }}" >> "$GITHUB_STEP_SUMMARY"
           ls out/*.apk 2>/dev/null | while read f; do echo "- OK: \`$f\` ($(du -h "$f"|cut -f1)) → 到 Artifacts 下载" >> "$GITHUB_STEP_SUMMARY"; done
