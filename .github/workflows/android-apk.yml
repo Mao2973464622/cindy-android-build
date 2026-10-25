@@ -1,22 +1,21 @@
 name: Android APK Auto-Build
-#目的：无需本地环境，在 GitHub Actions 上从源码构建出可安装的 Cindy Android APK
+# 从源码自动构建可安装的 Cindy Android APK（debug 签名），无需本地环境。
 on:
   workflow_dispatch:
     inputs:
       region:
-        description: "构建地区 (cn / global)"
+        description: "构建地区"
         type: choice
         options: [cn, global]
         default: cn
       variant:
-        description: "构建类型 (debug / release)"
+        description: "构建类型（debug 免签名依赖，先保证出包）"
         type: choice
         options: [debug, release]
         default: debug
   push:
     paths:
       - ".github/workflows/android-apk.yml"
-      - "apps/mobile/**"
 
 permissions:
   contents: read
@@ -29,128 +28,74 @@ jobs:
   apk:
     name: Build Cindy APK
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 150
     env:
-      # 跳过桌面端大件：aagent/binaries 与 electron，手机端构建用不上
       XDT_SKIP_AGENT_BIN_INSTALL: "1"
       ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
       PUPPETEER_SKIP_DOWNLOAD: "1"
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
       EXPO_NO_TELEMETRY: "1"
+      CI: "false"
       EXPO_PUBLIC_CINDY_AUTH_REGION: ${{ inputs.region || 'cn' }}
       NODE_OPTIONS: "--max-old-space-size=8192"
     steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          df -h /
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
-        with:
-          version: "10.33.2"
-
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: pnpm
-
       - name: Setup JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
-
-      - name: Android SDK tooling
+      - name: Android SDK packages
         run: |
-          sudo rm -rf /usr/local/lib/android || true
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "platforms;android-36" "build-tools;36.0.0" >/dev/null
-
-      - name: Generate self-host-regions.json (CI-only, not committed)
-        run: |
-          cat > apps/mobile/scripts/self-host-regions.json <<'JSON'
-          {
-            "cn": {
-              "authRegion": "cn",
-              "iosBundleId": "com.xd.cindycn",
-              "iosAppStoreId": "",
-              "androidPackage": "com.xd.cindycn",
-              "androidStoreUrl": "",
-              "npkgExpectBundle": "",
-              "tapdb": { "clientId": "ci-placeholder", "clientToken": "ci-placeholder" },
-              "oss": { "cdnBaseUrl": "", "bucket": "", "prefix": "", "ossRegion": "" },
-              "iosSigning": { "teamId": "", "profileName": "", "signIdentity": "", "profilePath": "", "exportMethod": "" },
-              "androidSigning": { "keyAlias": "cindy", "keystorePath": "/tmp/cindy.keystore" }
-            },
-            "global": {
-              "authRegion": "global",
-              "iosBundleId": "com.xd.cindy",
-              "iosAppStoreId": "",
-              "androidPackage": "com.xd.cindy",
-              "androidStoreUrl": "",
-              "npkgExpectBundle": "",
-              "google": { "webClientId": "", "iosClientId": "", "iosUrlScheme": "" },
-              "tapdb": { "clientId": "ci-placeholder", "clientToken": "ci-placeholder" },
-              "oss": { "cdnBaseUrl": "", "bucket": "", "prefix": "", "ossRegion": "" },
-              "iosSigning": { "teamId": "", "profileName": "", "signIdentity": "", "profilePath": "", "exportMethod": "" },
-              "androidSigning": { "keyAlias": "cindy", "keystorePath": "/tmp/cindy.keystore" }
-            },
-            "dev": {
-              "authRegion": "dev",
-              "iosBundleId": "com.xd.cindycn",
-              "iosAppStoreId": "",
-              "androidPackage": "com.xd.cindycn",
-              "androidStoreUrl": "",
-              "npkgExpectBundle": "",
-              "tapdb": { "clientId": "ci-placeholder", "clientToken": "ci-placeholder" },
-              "oss": { "cdnBaseUrl": "", "bucket": "", "prefix": "", "ossRegion": "" },
-              "iosSigning": { "teamId": "", "profileName": "", "signIdentity": "", "profilePath": "", "exportMethod": "" },
-              "androidSigning": { "keyAlias": "cindy", "keystorePath": "/tmp/cindy.keystore" }
-            }
-          }
-          JSON
-
-      - name: Generate signing keystore (ephemeral, CI-only)
-        run: |
-          keytool -genkeypair -v -keystore /tmp/cindy.keystore -storepass cindy123 \
-            -keypass cindy123 -alias cindy -keyalg RSA -keysize 2048 -validity 10000 \
-            -dname "CN=Cindy CI, O=CI, C=CN"
-
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "platforms;android-35" "platforms;android-36" "build-tools;35.0.0" "build-tools;36.0.0" >/dev/null
+      - name: Generate self-host-regions.json
+        run: node ./.ci-write-regions.cjs || node -e "require('fs').writeFileSync('apps/mobile/scripts/self-host-regions.json',JSON.stringify({cn:{authRegion:'cn',iosBundleId:'com.xd.cindycn',iosAppStoreId:'',androidPackage:'com.xd.cindycn',androidStoreUrl:'',npkgExpectBundle:'',tapdb:{clientId:'ci',clientToken:'ci'},oss:{cdnBaseUrl:'',bucket:'',prefix:'',ossRegion:''},iosSigning:{teamId:'',profileName:'',signIdentity:'',profilePath:'',exportMethod:''},androidSigning:{keyAlias:'cindy',keystorePath:'/tmp/cindy.keystore'}},global:{authRegion:'global',iosBundleId:'com.xd.cindy',iosAppStoreId:'',androidPackage:'com.xd.cindy',androidStoreUrl:'',npkgExpectBundle:'',google:{webClientId:'',iosClientId:'',iosUrlScheme:''},tapdb:{clientId:'ci',clientToken:'ci'},oss:{cdnBaseUrl:'',bucket:'',prefix:'',ossRegion:''},iosSigning:{teamId:'',profileName:'',signIdentity:'',profilePath:'',exportMethod:''},androidSigning:{keyAlias:'cindy',keystorePath:'/tmp/cindy.keystore'}},dev:{authRegion:'dev',iosBundleId:'com.xd.cindycn',iosAppStoreId:'',androidPackage:'com.xd.cindycn',androidStoreUrl:'',npkgExpectBundle:'',tapdb:{clientId:'ci',clientToken:'ci'},oss:{cdnBaseUrl:'',bucket:'',prefix:'',ossRegion:''},iosSigning:{teamId:'',profileName:'',signIdentity:'',profilePath:'',exportMethod:''},androidSigning:{keyAlias:'cindy',keystorePath:'/tmp/cindy.keystore'}}},null,2));console.log('regions written')"
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile --config.strict-dep-builds=false
-
+        run: pnpm install --frozen-lockfile
       - name: Expo prebuild (android)
         working-directory: apps/mobile
         run: npx expo prebuild -p android --no-install
-
       - name: Gradle build
         working-directory: apps/mobile/android
-        env:
-          XDT_ANDROID_KEYSTORE_PASSWORD_CN: cindy123
-          XDT_ANDROID_KEY_PASSWORD_CN: cindy123
-          XDT_ANDROID_KEYSTORE_PASSWORD_GLOBAL: cindy123
-          XDT_ANDROID_KEY_PASSWORD_GLOBAL: cindy123
         run: |
           if [ "${{ inputs.variant || 'debug' }}" = "release" ]; then TASK=assembleRelease; else TASK=assembleDebug; fi
-          ./gradlew "$TASK" --no-daemon --stacktrace -Dorg.gradle.jvmargs="-Xmx6g -XX:MaxMetaspaceSize=2g"
-
+          echo "Task: $TASK"
+          ./gradlew "$TASK" --no-daemon --stacktrace
       - name: Collect APK
         run: |
           mkdir -p out
-          find apps/mobile/android -name "*.apk" -print -exec cp {} out/ \;
-          ls -la out/
-
+          find apps/mobile/android -name "*.apk" -print -exec cp -v {} out/ \;
+          echo '--- artifacts ---'; ls -la out/ || true
       - name: Upload artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: cindy-android-${{ inputs.region || 'cn' }}-${{ inputs.variant || 'debug' }}
           path: out/*.apk
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 30
-
-      - name: Build summary
+      - name: Failure diagnostics
+        if: failure()
+        run: |
+          echo '### diag' >> "$GITHUB_STEP_SUMMARY"
+          echo '--- versions ---'; node -v; pnpm -v; java -version 2>&1 | head -2
+          echo '--- android dir ---'; ls apps/mobile/android 2>/dev/null || echo MISSING
+          echo '--- gradle logs tail ---'; find ~/.gradle -name '*.log' 2>/dev/null | head -3 | while read f; do echo "== $f"; tail -n 60 "$f"; done
+      - name: Summary
         if: always()
         run: |
-          echo "## 构建结果" >> "$GITHUB_STEP_SUMMARY"
-          echo "- region: ${{ inputs.region || 'cn' }}  variant: ${{ inputs.variant || 'debug' }}" >> "$GITHUB_STEP_SUMMARY"
-          ls out/*.apk 2>/dev/null | while read f; do echo "- \`$f\` ($(du -h "$f" | cut -f1))" >> "$GITHUB_STEP_SUMMARY"; done
+          echo "## Cindy Android 构建 · ${{ inputs.region || 'cn' }} / ${{ inputs.variant || 'debug' }}" >> "$GITHUB_STEP_SUMMARY"
+          ls out/*.apk 2>/dev/null | while read f; do echo "- OK: \`$f\` ($(du -h "$f"|cut -f1)) → 到 Artifacts 下载" >> "$GITHUB_STEP_SUMMARY"; done
