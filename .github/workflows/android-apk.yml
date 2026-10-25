@@ -18,7 +18,7 @@ on:
       - ".github/workflows/android-apk.yml"
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: android-apk-${{ github.ref }}
@@ -102,6 +102,22 @@ jobs:
           echo '--- versions ---'; node -v; pnpm -v; java -version 2>&1 | head -2
           echo '--- android dir ---'; ls apps/mobile/android 2>/dev/null || echo MISSING
           echo '--- gradle logs tail ---'; find ~/.gradle -name '*.log' 2>/dev/null | head -3 | while read f; do echo "== $f"; tail -n 60 "$f"; done
+      - name: Publish rolling Release (public direct link)
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG=android-preview
+          APK=$(ls out/*.apk | head -1)
+          [ -z "$APK" ] && { echo "no apk to publish"; exit 0; }
+          gh release create "$TAG" \
+            --title "Cindy Android Preview (auto-build)" \
+            --notes "由 GitHub Actions 自动构建，每次成功自动覆盖。debug 签名，可直接安装。commit: ${{ github.sha }}" \
+            --prerelease 2>/dev/null || true
+          gh release upload "$TAG" "$APK" --clobber
+          echo "### 下载地址" >> "$GITHUB_STEP_SUMMARY"
+          echo "https://github.com/${{ github.repository }}/releases/download/$TAG/$(basename "$APK")" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Summary
         if: always()
         run: |
