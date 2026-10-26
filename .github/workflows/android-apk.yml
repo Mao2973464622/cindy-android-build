@@ -112,7 +112,7 @@ jobs:
           keytool -genkeypair -v \
             -keystore "$RUNNER_TEMP/ci.keystore" \
             -alias cindy-ci -keyalg RSA -keysize 2048 -validity 1095 \
-            -storepass cindy-ci-store -keypass cindy-ci-key \
+            -storepass cindy-ci-pass -keypass cindy-ci-pass \
             -dname "CN=Cindy CI, OU=Community Build, O=CI, L=Internet, C=CN"
           ls -l "$RUNNER_TEMP/ci.keystore"
 
@@ -128,10 +128,10 @@ jobs:
         id: build
         working-directory: apps/mobile
         env:
-          XDT_ANDROID_KEYSTORE_PASSWORD_CN: "cindy-ci-store"
-          XDT_ANDROID_KEY_PASSWORD_CN: "cindy-ci-key"
-          XDT_ANDROID_KEYSTORE_PASSWORD_GLOBAL: "cindy-ci-store"
-          XDT_ANDROID_KEY_PASSWORD_GLOBAL: "cindy-ci-key"
+          XDT_ANDROID_KEYSTORE_PASSWORD_CN: "cindy-ci-pass"
+          XDT_ANDROID_KEY_PASSWORD_CN: "cindy-ci-pass"
+          XDT_ANDROID_KEYSTORE_PASSWORD_GLOBAL: "cindy-ci-pass"
+          XDT_ANDROID_KEY_PASSWORD_GLOBAL: "cindy-ci-pass"
         run: |
           set -o pipefail
           ARGS=(--region "$BUILD_REGION" --artifacts apk --execute --skip-git-gate)
