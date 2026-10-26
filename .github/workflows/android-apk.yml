@@ -1,18 +1,23 @@
 name: Android APK Auto-Build
-# 从源码自动构建可安装的 Cindy Android APK（debug 签名），无需本地环境。
+# 由上游自带脚本 apps/mobile/scripts/build-android.mjs 出自签 release APK
+# （内置 JS bundle，可离线安装；含 R8 优化、fingerprint/runtimeVersion 回读校验）
 on:
   workflow_dispatch:
     inputs:
       region:
-        description: "构建地区"
+        description: "构建地区（cn=中国大陆端点 / global=全球端点）"
         type: choice
         options: [cn, global]
         default: cn
-      variant:
-        description: "构建类型（release=内置JS可独立运行；debug=需连Metro开发服务器，装了也打不开）"
+      abis:
+        description: "目标 ABI（arm64-v8a 构建最快；K70 等现代机型够用）"
         type: choice
-        options: [release, debug]
-        default: release
+        options: [arm64-v8a, "arm64-v8a,armeabi-v7a", all]
+        default: arm64-v8a
+      desktopVersion:
+        description: "配对桌面版本号（可选，仅设置页展示）"
+        required: false
+        default: ""
   push:
     paths:
       - ".github/workflows/android-apk.yml"
@@ -21,14 +26,14 @@ permissions:
   contents: write
 
 concurrency:
-  group: android-apk-${{ github.ref }}
+  group: android-apk-${{ github.ref }}-${{ github.event.inputs.region || 'cn' }}
   cancel-in-progress: true
 
 jobs:
   apk:
-    name: Build Cindy APK
+    name: Build (${{ github.event.inputs.region || 'cn' }} · ${{ github.event.inputs.abis || 'arm64-v8a' }})
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    timeout-minutes: 330
     env:
       XDT_SKIP_AGENT_BIN_INSTALL: "1"
       ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
@@ -36,105 +41,161 @@ jobs:
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
       EXPO_NO_TELEMETRY: "1"
       CI: "false"
-      EXPO_PUBLIC_CINDY_AUTH_REGION: ${{ inputs.region || 'cn' }}
-      EXPO_PUBLIC_ENDPOINT_MANIFEST_BASE_URL: ${{ inputs.region == 'global' && 'https://hotfix.cindy.app/cindy' || 'https://hotfix.cindy.com.cn/cindy' }}
-      EXPO_PUBLIC_ENDPOINT_MANIFEST_PEER_BASE_URL: ${{ inputs.region == 'global' && 'https://hotfix.cindy.com.cn/cindy' || 'https://hotfix.cindy.app/cindy' }}
       NODE_OPTIONS: "--max-old-space-size=8192"
+      BUILD_REGION: ${{ github.event.inputs.region || 'cn' }}
+      BUILD_ABIS: ${{ github.event.inputs.abis || 'arm64-v8a' }}
+      DESKTOP_VERSION: ${{ github.event.inputs.desktopVersion || '' }}
+      KEYSTORE_PATH: ${{ runner.temp }}/ci.keystore
+      KEYSTORE_DIR: ${{ runner.temp }}
     steps:
-      - name: Free disk space (KEEP Android SDK)
+      - name: Free disk space (keep Android SDK)
         run: |
-          sudo rm -rf /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/lib/android/ndk-* || true
-          echo "ANDROID_HOME=$ANDROID_HOME"; echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          sudo rm -rf /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          sudo rm -rf /usr/local/lib/android/sdk/ndk /usr/local/lib/android/sdk/cmake || true
           df -h /
+
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: pnpm
+
       - name: Setup JDK 17
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
+
       - name: Android SDK packages
         run: |
           SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
-          echo "Using SDK root: $SDK"; ls -d "$SDK" || true
           SDKMGR=$(find "$SDK/cmdline-tools" -name sdkmanager -type f 2>/dev/null | head -1)
           [ -z "$SDKMGR" ] && SDKMGR=$(command -v sdkmanager || true)
-          if [ -z "$SDKMGR" ]; then echo "sdkmanager not found; rely on AGP auto-download"; exit 0; fi
-          echo "sdkmanager: $SDKMGR"
-          yes | "$SDKMGR" --licenses >/dev/null 2>&1 || true
-          "$SDKMGR" --install "platform-tools" "platforms;android-36" "build-tools;36.0.0" || true
-          "$SDKMGR" --list_installed 2>/dev/null | head -30 || true
-      - name: Generate self-host-regions.json
-        run: node ./.ci-write-regions.cjs || node -e "require('fs').writeFileSync('apps/mobile/scripts/self-host-regions.json',JSON.stringify({cn:{authRegion:'cn',iosBundleId:'com.xd.cindycn',iosAppStoreId:'',androidPackage:'com.xd.cindycn',androidStoreUrl:'',npkgExpectBundle:'',tapdb:{clientId:'ci',clientToken:'ci'},oss:{cdnBaseUrl:'',bucket:'',prefix:'',ossRegion:''},iosSigning:{teamId:'',profileName:'',signIdentity:'',profilePath:'',exportMethod:''},androidSigning:{keyAlias:'cindy',keystorePath:'/tmp/cindy.keystore'}},global:{authRegion:'global',iosBundleId:'com.xd.cindy',iosAppStoreId:'',androidPackage:'com.xd.cindy',androidStoreUrl:'',npkgExpectBundle:'',google:{webClientId:'',iosClientId:'',iosUrlScheme:''},tapdb:{clientId:'ci',clientToken:'ci'},oss:{cdnBaseUrl:'',bucket:'',prefix:'',ossRegion:''},iosSigning:{teamId:'',profileName:'',signIdentity:'',profilePath:'',exportMethod:''},androidSigning:{keyAlias:'cindy',keystorePath:'/tmp/cindy.keystore'}},dev:{authRegion:'dev',iosBundleId:'com.xd.cindycn',iosAppStoreId:'',androidPackage:'com.xd.cindycn',androidStoreUrl:'',npkgExpectBundle:'',tapdb:{clientId:'ci',clientToken:'ci'},oss:{cdnBaseUrl:'',bucket:'',prefix:'',ossRegion:''},iosSigning:{teamId:'',profileName:'',signIdentity:'',profilePath:'',exportMethod:''},androidSigning:{keyAlias:'cindy',keystorePath:'/tmp/cindy.keystore'}}},null,2));console.log('regions written')"
+          if [ -n "$SDKMGR" ]; then
+            yes | "$SDKMGR" --licenses >/dev/null 2>&1 || true
+            "$SDKMGR" --install "platform-tools" "platforms;android-36" "build-tools;36.0.0" || true
+          else
+            echo "sdkmanager 未找到，依赖 AGP 自动下载"
+          fi
+
+      - name: Gradle cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-cindy-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml', 'apps/mobile/package.json') }}-${{ env.BUILD_REGION }}-${{ env.BUILD_ABIS }}
+          restore-keys: |
+            gradle-cindy-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml', 'apps/mobile/package.json') }}-
+            gradle-cindy-${{ runner.os }}-
+
+      # ORG_GRADLE_PROJECT_* 等价于命令行 -P，优先级高于 prebuild 生成的
+      # android/gradle.properties（RN 模板默认四个 ABI），用来裁掉冗余架构。
+      - name: Resolve gradle project properties
+        run: |
+          if [ "$BUILD_ABIS" = "all" ]; then
+            echo "ABI=全部（RN 模板默认四个）"
+          else
+            echo "ORG_GRADLE_PROJECT_reactNativeArchitectures=$BUILD_ABIS" >> "$GITHUB_ENV"
+            echo "ABI=$BUILD_ABIS"
+          fi
+
+      - name: Generate CI keystore (自签，一次性)
+        run: |
+          rm -f "$KEYSTORE_PATH"
+          keytool -genkeypair -v \
+            -keystore "$KEYSTORE_PATH" \
+            -alias cindy-ci -keyalg RSA -keysize 2048 -validity 1095 \
+            -storepass cindy-ci-store -keypass cindy-ci-key \
+            -dname "CN=Cindy CI, OU=Community Build, O=CI, L=Internet, C=CN"
+          ls -l "$KEYSTORE_PATH"
+
+      - name: Write self-host-regions.json
+        run: node .ci/write-regions.cjs
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-      - name: Expo prebuild (android)
+
+      - name: Build release APK (upstream build-android.mjs)
+        id: build
         working-directory: apps/mobile
-        run: npx expo prebuild -p android --no-install
-      - name: Gradle build
-        working-directory: apps/mobile/android
+        env:
+          XDT_ANDROID_KEYSTORE_PASSWORD_CN: "cindy-ci-store"
+          XDT_ANDROID_KEY_PASSWORD_CN: "cindy-ci-key"
+          XDT_ANDROID_KEYSTORE_PASSWORD_GLOBAL: "cindy-ci-store"
+          XDT_ANDROID_KEY_PASSWORD_GLOBAL: "cindy-ci-key"
         run: |
-          if [ "${{ inputs.variant || 'release' }}" = "release" ]; then TASK=assembleRelease; else TASK=assembleDebug; fi
-          echo "Task: $TASK"
-          ./gradlew "$TASK" --no-daemon --stacktrace
-      - name: Collect APK
+          set -o pipefail
+          ARGS=(--region "$BUILD_REGION" --artifacts apk --execute --skip-git-gate)
+          if [ -n "$DESKTOP_VERSION" ]; then ARGS+=(--desktop-version "$DESKTOP_VERSION"); fi
+          node scripts/build-android.mjs "${ARGS[@]}" --out "$GITHUB_WORKSPACE/out" 2>&1 | tee /tmp/build.log
+
+      - name: Fallback debug APK (仅 release 失败时兜底)
+        if: failure()
+        working-directory: apps/mobile
         run: |
-          mkdir -p out
-          find apps/mobile/android -name "*.apk" -print -exec cp -v {} out/ \;
-          echo '--- artifacts ---'; ls -la out/ || true
-          APK=$(ls out/*.apk | head -1)
-          if [ -z "$APK" ]; then echo "NO APK PRODUCED"; exit 1; fi
-          python3 - "$APK" <<'PY'
-          import sys,zipfile
-          z=zipfile.ZipFile(sys.argv[1]); n=z.namelist()
-          bundle=[x for x in n if 'index.android.bundle' in x]
-          print('bundle:',bundle)
-          if not bundle:
-              print('::error::APK 里没有内置 JS bundle，这种包离线打不开，拒绝发布')
-              sys.exit(1)
-          abis=sorted(set(x.split('/')[1] for x in n if x.startswith('lib/')))
-          print('ABIs:',abis)
-          PY
+          echo "::warning::release 构建失败，尝试 assembleDebug 兜底（debug 包同样内置 bundle）"
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          if [ -d android ]; then
+            (cd android && ./gradlew assembleDebug --no-daemon --stacktrace) || true
+            find android/app/build/outputs/apk -name '*.apk' -exec cp -v {} "$GITHUB_WORKSPACE/out/" \; || true
+          fi
+
+      - name: Verify artifacts
+        run: node .ci/verify-apk.cjs
+
       - name: Upload artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: cindy-android-${{ inputs.region || 'cn' }}-${{ inputs.variant || 'release' }}
+          name: cindy-android-${{ env.BUILD_REGION }}-${{ github.sha }}
           path: out/*.apk
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 30
-      - name: Failure diagnostics
-        if: failure()
-        run: |
-          echo '### diag' >> "$GITHUB_STEP_SUMMARY"
-          echo '--- versions ---'; node -v; pnpm -v; java -version 2>&1 | head -2
-          echo '--- android dir ---'; ls apps/mobile/android 2>/dev/null || echo MISSING
-          echo '--- gradle logs tail ---'; find ~/.gradle -name '*.log' 2>/dev/null | head -3 | while read f; do echo "== $f"; tail -n 60 "$f"; done
+
       - name: Publish rolling Release (public direct link)
         if: success()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -e
           TAG=android-preview
-          APK=$(ls out/*.apk | head -1)
-          [ -z "$APK" ] && { echo "no apk to publish"; exit 0; }
+          APK="${APK_FILE:-$(ls out/*.apk | head -1)}"
+          VER=$(node -e "console.log(require('./apps/mobile/app.json').expo.version)")
           gh release create "$TAG" \
-            --title "Cindy Android Preview (auto-build)" \
-            --notes "由 GitHub Actions 自动构建，每次成功自动覆盖。debug 签名，可直接安装。commit: ${{ github.sha }}" \
+            --title "Cindy Android Preview (auto build v$VER)" \
+            --notes "GitHub Actions 自动构建：region=$BUILD_REGION, abi=$BUILD_ABIS, commit=$GITHUB_SHA。自签 release 包（内置 JS bundle，可离线运行），与官方签名不通用、不能覆盖安装官方版。" \
             --prerelease 2>/dev/null || true
           gh release upload "$TAG" "$APK" --clobber
-          echo "### 下载地址" >> "$GITHUB_STEP_SUMMARY"
-          echo "https://github.com/${{ github.repository }}/releases/download/$TAG/$(basename "$APK")" >> "$GITHUB_STEP_SUMMARY"
+          URL="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$(basename "$APK")"
+          echo "### 直链下载" >> "$GITHUB_STEP_SUMMARY"
+          echo "- [$APK]($URL)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- version: v$VER · region: $BUILD_REGION · abi: $BUILD_ABIS" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Failure diagnostics
+        if: failure()
+        run: |
+          echo '### 构建日志尾部' >> "$GITHUB_STEP_SUMMARY"
+          tail -n 120 /tmp/build.log 2>/dev/null >> "$GITHUB_STEP_SUMMARY" || true
+          echo '--- versions ---'; node -v; pnpm -v; java -version 2>&1 | head -2
+          echo '--- df ---'; df -h /
+          echo '--- android dir ---'; ls apps/mobile/android 2>/dev/null || echo MISSING
+          find ~/.gradle -name '*.log' 2>/dev/null | head -2 | while read -r f; do
+            echo "== $f"; tail -n 60 "$f"; done
 
       - name: Summary
         if: always()
         run: |
-          echo "## Cindy Android 构建 · ${{ inputs.region || 'cn' }} / ${{ inputs.variant || 'release' }}" >> "$GITHUB_STEP_SUMMARY"
-          ls out/*.apk 2>/dev/null | while read f; do echo "- OK: \`$f\` ($(du -h "$f"|cut -f1)) → 到 Artifacts 下载" >> "$GITHUB_STEP_SUMMARY"; done
+          {
+            echo "## Cindy Android · $BUILD_REGION · $BUILD_ABIS"
+            echo "- commit: \`$GITHUB_SHA\`"
+            ls -lh out/*.apk 2>/dev/null | awk '{print "- APK: " $9 " (" $5 ")"}'
+          } >> "$GITHUB_STEP_SUMMARY"
