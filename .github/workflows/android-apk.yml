@@ -45,8 +45,6 @@ jobs:
       BUILD_REGION: ${{ github.event.inputs.region || 'cn' }}
       BUILD_ABIS: ${{ github.event.inputs.abis || 'arm64-v8a' }}
       DESKTOP_VERSION: ${{ github.event.inputs.desktopVersion || '' }}
-      KEYSTORE_PATH: ${{ runner.temp }}/ci.keystore
-      KEYSTORE_DIR: ${{ runner.temp }}
     steps:
       - name: Free disk space (keep Android SDK)
         run: |
@@ -110,15 +108,17 @@ jobs:
 
       - name: Generate CI keystore (自签，一次性)
         run: |
-          rm -f "$KEYSTORE_PATH"
+          rm -f "$RUNNER_TEMP/ci.keystore"
           keytool -genkeypair -v \
-            -keystore "$KEYSTORE_PATH" \
+            -keystore "$RUNNER_TEMP/ci.keystore" \
             -alias cindy-ci -keyalg RSA -keysize 2048 -validity 1095 \
             -storepass cindy-ci-store -keypass cindy-ci-key \
             -dname "CN=Cindy CI, OU=Community Build, O=CI, L=Internet, C=CN"
-          ls -l "$KEYSTORE_PATH"
+          ls -l "$RUNNER_TEMP/ci.keystore"
 
       - name: Write self-host-regions.json
+        env:
+          KEYSTORE_PATH: ${{ runner.temp }}/ci.keystore
         run: node .ci/write-regions.cjs
 
       - name: Install dependencies
@@ -138,22 +138,11 @@ jobs:
           if [ -n "$DESKTOP_VERSION" ]; then ARGS+=(--desktop-version "$DESKTOP_VERSION"); fi
           node scripts/build-android.mjs "${ARGS[@]}" --out "$GITHUB_WORKSPACE/out" 2>&1 | tee /tmp/build.log
 
-      - name: Fallback debug APK (仅 release 失败时兜底)
-        if: failure()
-        working-directory: apps/mobile
-        run: |
-          echo "::warning::release 构建失败，尝试 assembleDebug 兜底（debug 包同样内置 bundle）"
-          mkdir -p "$GITHUB_WORKSPACE/out"
-          if [ -d android ]; then
-            (cd android && ./gradlew assembleDebug --no-daemon --stacktrace) || true
-            find android/app/build/outputs/apk -name '*.apk' -exec cp -v {} "$GITHUB_WORKSPACE/out/" \; || true
-          fi
-
-      - name: Verify artifacts
+      - name: Verify artifacts (必须内置 JS bundle)
         run: node .ci/verify-apk.cjs
 
       - name: Upload artifact
-        if: always()
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: cindy-android-${{ env.BUILD_REGION }}-${{ github.sha }}
